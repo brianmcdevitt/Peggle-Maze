@@ -1,0 +1,463 @@
+#include "pebble.h"
+
+#define MATH_PI 3.141592653589793238462
+#define NUM_DISCS 1
+#define DISC_DENSITY 0.25
+#define ACCEL_RATIO 0.007
+#define ACCEL_STEP_MS 50
+
+typedef struct Vec2d {
+  double x;
+  double y;
+} Vec2d;
+
+typedef struct Disc {
+  Vec2d pos;
+  Vec2d vel;
+  double mass;
+  double radius;
+} Disc;
+
+static Disc discs[NUM_DISCS];
+
+static double next_radius = 6;
+
+static Window *game_window, *victory_window;
+
+static GRect window_frame;
+
+static Layer *disc_layer;
+
+static TextLayer *victory_layer;
+
+static AppTimer *timer;
+
+static Layer *path_layer;
+
+static int attempts;
+
+static const GPathInfo MAZE_PATH_WALL1 = {
+  4,
+  (GPoint []){
+    {70, 0},
+    {74, 0},
+    {74, 30},
+    {70, 30} 
+  },
+};
+
+static const GPathInfo MAZE_PATH_WALL2 = {
+  8,
+  (GPoint []){
+    {70, 60},
+    {70, 63},
+    {110, 63},
+    {110, 30},
+    {144, 30},
+    {144, 27},
+    {106, 27},
+    {106, 60}
+  },
+};
+
+static const GPathInfo MAZE_PATH_WALL3 = {
+  8,
+  (GPoint []){
+    {70, 120},
+    {70, 123},
+    {110, 123},
+    {110, 90},
+    {144, 90},
+    {144, 87},
+    {106, 87},
+    {106, 120}
+  },
+};
+
+static const GPathInfo MAZE_PATH_WALL4 = {
+  4,
+  (GPoint []){
+    {0, 120},
+    {0, 123},
+    {36, 123},
+    {36, 120} 
+  },
+};
+
+static const GPathInfo MAZE_PATH_WALL5 = {
+   8,
+  (GPoint []){
+    {0, 87},
+    {0, 90},
+    {70, 90},
+    {70, 87},
+    {31, 87},
+    {31, 30},
+    {26, 30},
+    {26, 87}
+  },
+};
+
+static GPath *graphic_walls[5];
+
+//method definitions
+static void path_layer_update_callback(Layer *me, GContext *ctx);
+static void disc_init(Disc *disc);
+static double disc_calc_mass(Disc *disc);
+static void disc_apply_force(Disc *disc, Vec2d force);
+static void disc_apply_accel(Disc *disc, AccelData accel);
+static bool collide_vertical_wall(Disc *disc);
+static bool collide_horizontal_wall(Disc *disc);
+static bool isFalling(Disc *disc);
+static bool reachedEnd(Disc *disc);
+static void game_window_unload(Window *window);
+static void disc_update(Disc *disc);
+static void disc_draw(GContext *ctx, Disc *disc);
+static void disc_layer_update_callback(Layer *me, GContext *ctx);
+static void timer_callback(void *data);
+static void game_window_load(Window *window);
+static void victory_window_load(Window *window);
+static void victory_window_unload(Window *window);
+int main(void);
+static void init();
+static void deinit();
+
+
+static void path_layer_update_callback(Layer *me, GContext *ctx){
+  (void)me;
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  for (int i = 0; i < 5; i++)
+    gpath_draw_filled(ctx, graphic_walls[i]);
+}
+
+static double disc_calc_mass(Disc *disc) {
+  return MATH_PI * disc->radius * disc->radius * DISC_DENSITY;
+}
+
+static void disc_init(Disc *disc) {
+  GRect frame = window_frame;
+  disc->pos.x = frame.size.w - 10;
+  disc->pos.y = 10;
+  disc->vel.x = 0;
+  disc->vel.y = 0;
+  disc->radius = next_radius;
+  disc->mass = disc_calc_mass(disc);
+  next_radius += 0.5;
+}
+
+static void disc_apply_force(Disc *disc, Vec2d force) {
+  disc->vel.x += force.x / disc->mass;
+  disc->vel.y += force.y / disc->mass;
+}
+
+static void disc_apply_accel(Disc *disc, AccelData accel) {
+  Vec2d force;
+  force.x = accel.x * ACCEL_RATIO;
+  force.y = -accel.y * ACCEL_RATIO;
+  disc_apply_force(disc, force);
+}
+
+static bool collide_vertical_wall(Disc *disc){
+  bool is_colliding = false;
+  double ball_left = disc->pos.x - disc->radius;
+  double ball_right = disc->pos.x + disc->radius;
+  //test wall 1 vertical walls
+  if (((ball_left < 74 && ball_left > 68 && disc->vel.x < 0) || (ball_right > 70 && ball_right < 76 && disc->vel.x > 0)) && disc->pos.y > 0 && disc->pos.y < 30)
+    is_colliding = true;
+  //test wall 2 vertical walls
+  if (((ball_left < 110 && ball_left > 104 && disc->vel.x < 0) || (ball_right > 106 && ball_right < 112 && disc->vel.x > 0)) && disc->pos.y > 27 && disc->pos.y < 63)
+    is_colliding = true;
+  if (ball_right > 70 && ball_right < 75 && disc->vel.x > 0){
+    if (disc->pos.y - disc->radius < 63 && disc->pos.y - disc->radius > 60)
+      is_colliding = true;
+    else if (disc->pos.y + disc->radius < 63 && disc->pos.y + disc->radius > 60)
+      is_colliding = true;
+    else if (disc->pos.y + disc->radius > 63 && disc->pos.y - disc->radius < 60)
+      is_colliding = true;
+  }
+  //test wall 3 vertical walls
+  if (((ball_left < 110 && ball_left > 104 && disc->vel.x < 0) || (ball_right > 106 && ball_right < 112 && disc->vel.x > 0)) && disc->pos.y > 87 && disc->pos.y < 123)
+    is_colliding = true;
+  if (ball_right > 70 && ball_right < 75 && disc->vel.x > 0){
+    if (disc->pos.y - disc->radius < 123 && disc->pos.y - disc->radius > 120)
+      is_colliding = true;
+    else if (disc->pos.y + disc->radius < 123 && disc->pos.y + disc->radius > 120)
+      is_colliding = true;
+    else if (disc->pos.y + disc->radius > 123 && disc->pos.y - disc->radius < 120)
+      is_colliding = true;
+  }
+  //test wall 4 vertical walls
+  if (ball_left > 31 && ball_left < 36 && disc->vel.x < 0){
+    if (disc->pos.y - disc->radius < 123 && disc->pos.y - disc->radius > 120)
+      is_colliding = true;
+    else if (disc->pos.y + disc->radius < 123 && disc->pos.y + disc->radius > 120)
+      is_colliding = true;
+    else if (disc->pos.y + disc->radius > 123 && disc->pos.y - disc->radius < 120)
+      is_colliding = true;
+  }
+  //test wall 5 vertical walls
+  if (((ball_left < 31 && ball_left > 25 && disc->vel.x < 0) || (ball_right > 26 && ball_right < 32 && disc->vel.x > 0)) && disc->pos.y > 30 && disc->pos.y < 90)
+    is_colliding = true;
+  if (ball_left > 65 && ball_left < 70 && disc->vel.x < 0){
+    if (disc->pos.y - disc->radius < 90 && disc->pos.y - disc->radius > 87)
+      is_colliding = true;
+    else if (disc->pos.y + disc->radius < 90 && disc->pos.y + disc->radius > 87)
+      is_colliding = true;
+    else if (disc->pos.y + disc->radius > 90 && disc->pos.y - disc->radius < 87)
+      is_colliding = true;
+  }
+  
+  return is_colliding;
+}
+
+static bool collide_horizontal_wall(Disc *disc){
+  bool is_colliding = false;
+  double ball_top = disc->pos.y - disc->radius;
+  double ball_bottom = disc->pos.y + disc->radius;
+  //test wall 1 horizontal walls
+  if (ball_top > 25 && ball_top < 30 && disc->vel.y < 0){
+    if (disc->pos.x - disc->radius < 74 && disc->pos.x - disc->radius > 70)
+      is_colliding = true;
+    else if (disc->pos.x + disc->radius < 74 && disc->pos.x + disc->radius > 70)
+      is_colliding = true;
+    else if (disc->pos.x + disc->radius > 74 && disc->pos.x - disc->radius < 70)
+      is_colliding = true;
+  }
+  //test wall 2 horizontal walls
+  if (((ball_top < 63 && ball_top > 57 && disc->vel.y < 0) || (ball_bottom > 60 && ball_bottom < 66 && disc->vel.y > 0)) && disc->pos.x > 70 && disc->pos.x < 110)
+    is_colliding = true;
+  if (((ball_top < 30 && ball_top > 24 && disc->vel.y < 0) || (ball_bottom > 27 && ball_bottom < 33 && disc->vel.y > 0)) && disc->pos.x > 106 && disc->pos.x < 144)
+    is_colliding = true;
+  //test wall 3 horizontal walls
+  if (((ball_top < 123 && ball_top > 117 && disc->vel.y < 0) || (ball_bottom > 120 && ball_bottom < 126 && disc->vel.y > 0)) && disc->pos.x > 70 && disc->pos.x < 110)
+    is_colliding = true;
+  if (((ball_top < 90 && ball_top > 84 && disc->vel.y < 0) || (ball_bottom > 87 && ball_bottom < 93 && disc->vel.y > 0)) && disc->pos.x > 106 && disc->pos.x < 144)
+    is_colliding = true;
+  //test wall 4 horizontal walls
+  if (((ball_top < 123 && ball_top > 117 && disc->vel.y < 0) || (ball_bottom > 120 && ball_bottom < 126 && disc->vel.y > 0)) && disc->pos.x > 0 && disc->pos.x < 36)
+    is_colliding = true;
+  //test wall 5 horizontal walls
+  if (((ball_top < 90 && ball_top > 84 && disc->vel.y < 0) || (ball_bottom > 87 && ball_bottom < 93 && disc->vel.y > 0)) && disc->pos.x > 0 && disc->pos.x < 70)
+    is_colliding = true;
+  if (ball_bottom > 30 && ball_bottom < 35 && disc->vel.y > 0){
+    if (disc->pos.x - disc->radius < 31 && disc->pos.x - disc->radius > 26)
+      is_colliding = true;
+    else if (disc->pos.x + disc->radius < 31 && disc->pos.x + disc->radius > 26)
+      is_colliding = true;
+    else if (disc->pos.x + disc->radius > 31 && disc->pos.x - disc->radius < 26)
+      is_colliding = true;
+  }
+  return is_colliding;
+}
+  
+static bool isFalling(Disc *disc){
+    bool isFalling = false;
+    double radius = 6;
+    //test circle 1
+    if (disc->pos.x < 85 + radius && disc->pos.x > 85 - radius && disc->pos.y < 10 + radius && disc->pos.y > 10 - radius)
+      isFalling = true;
+    //2
+    if (disc->pos.x < 96 + radius && disc->pos.x > 96 - radius && disc->pos.y < 50 + radius && disc->pos.y > 50 - radius)
+      isFalling = true;
+    //3
+    if (disc->pos.x < 45 + radius && disc->pos.x > 45 - radius && disc->pos.y < 75 + radius && disc->pos.y > 75 - radius)
+      isFalling = true;
+    //4
+    if (disc->pos.x < 96 + radius && disc->pos.x > 96 - radius && disc->pos.y < 105 + radius && disc->pos.y > 105 - radius)
+      isFalling = true;
+    //5
+    if (disc->pos.x < 31 + radius && disc->pos.x > 31 - radius && disc->pos.y < 105 + radius && disc->pos.y > 105 - radius)
+      isFalling = true;
+    
+    return isFalling;
+  
+}
+
+static bool reachedEnd(Disc *disc){
+  bool reachedEnd = false;
+  if (disc->pos.x < 23 && disc->pos.x > 0 && disc->pos.y < 144 && disc->pos.y > 118)
+    reachedEnd = true;
+  return reachedEnd;
+}
+
+static void game_window_unload(Window *window) {
+  layer_destroy(disc_layer);
+}
+
+static void disc_update(Disc *disc) {
+  const GRect frame = window_frame;
+  double e = 0.5;
+  //bounds the left and right of screen
+  if ((disc->pos.x - disc->radius < 0 && disc->vel.x < 0)
+    || (disc->pos.x + disc->radius > frame.size.w && disc->vel.x > 0)) {
+    disc->vel.x = -disc->vel.x * e;
+  }
+  //bounds the top and botom of screen
+  if ((disc->pos.y - disc->radius < 0 && disc->vel.y < 0)
+    || (disc->pos.y + disc->radius > frame.size.h && disc->vel.y > 0)) {
+    disc->vel.y = -disc->vel.y * e;
+  }
+  //collision detection for vertical walls
+  if(collide_vertical_wall(disc))
+    disc->vel.x = -disc->vel.x * e;
+  //collision detection for horizontal walls
+  if(collide_horizontal_wall(disc))
+    disc->vel.y = -disc->vel.y * e;
+  //checks if the ball fell
+  if(isFalling(disc)){
+    disc->vel.x = 0;
+    disc->vel.y = 0;
+    disc->radius -= 1;
+    attempts++;
+  }
+  //checks if the ball reached the finish
+  if(reachedEnd(disc)){
+    window_stack_pop(false);
+    window_stack_push(victory_window, true /* Animated */);
+    window_set_background_color(victory_window, GColorBlack);
+  }
+  
+  disc->pos.x += disc->vel.x;
+  disc->pos.y += disc->vel.y;
+}
+
+static void disc_draw(GContext *ctx, Disc *disc) {
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_circle(ctx, GPoint(disc->pos.x, disc->pos.y), disc->radius);
+  
+  graphics_context_set_stroke_color(ctx, GColorWhite);
+  graphics_draw_circle(ctx, GPoint(85, 10), 8);
+  graphics_draw_circle(ctx, GPoint(96, 50), 8);
+  graphics_draw_circle(ctx, GPoint(45, 75), 8);
+  graphics_draw_circle(ctx, GPoint(96, 105), 8);
+  graphics_draw_circle(ctx, GPoint(31, 105), 8);
+  
+  int count = 0;
+  int y = 119;
+  for (int i = 0; i < 3; i++){
+    int x = 2;
+    y = y + 7;
+    for (int j = 0; j < 3; j++){
+      if(count % 2 == 0) {
+        graphics_fill_rect(ctx, GRect(x,y,7,7), 0, GCornerNone);
+       }
+      else{
+        graphics_draw_rect(ctx, GRect(x,y,7,7));
+      }
+      x = x + 7;
+      count++;
+    }
+  }
+}
+
+static void disc_layer_update_callback(Layer *me, GContext *ctx) {
+  Disc *ball = &discs[0];
+  GRect frame = window_frame;
+  if (ball->radius < 2){
+    ball->radius = 6;
+    ball->pos.x = frame.size.w - 10;
+    ball->pos.y = 10;
+  }
+  for (int i = 0; i < NUM_DISCS; i++) {
+    disc_draw(ctx, &discs[i]);
+  }
+}
+
+static void timer_callback(void *data) {
+  AccelData accel = (AccelData) { .x = 0, .y = 0, .z = 0 };
+
+  accel_service_peek(&accel);
+
+  for (int i = 0; i < NUM_DISCS; i++) {
+    Disc *disc = &discs[i];
+    disc_apply_accel(disc, accel);
+    disc_update(disc);
+  }
+
+  layer_mark_dirty(disc_layer);
+
+  timer = app_timer_register(ACCEL_STEP_MS, timer_callback, NULL);
+}
+
+
+static void game_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(game_window);
+  GRect frame = window_frame = layer_get_frame(window_layer);
+
+  disc_layer = layer_create(frame);
+  layer_set_update_proc(disc_layer, disc_layer_update_callback);
+  layer_add_child(window_layer, disc_layer);
+
+  for (int i = 0; i < NUM_DISCS; i++) {
+    disc_init(&discs[i]);
+  }
+}
+
+static void victory_window_load(Window *window) {
+  victory_layer = text_layer_create(GRect(0,50,144,100));
+  
+  text_layer_set_background_color(victory_layer, GColorBlack);
+  text_layer_set_text_color(victory_layer, GColorClear);
+
+  
+  text_layer_set_text_alignment(victory_layer, GTextAlignmentLeft);
+  text_layer_set_text(victory_layer, "YOU WIN!");
+  
+  
+  layer_add_child(window_get_root_layer(window), text_layer_get_layer(victory_layer));
+}
+
+static void victory_window_unload(Window *window) {
+  text_layer_destroy(victory_layer);
+}
+
+static void init(void) {
+  game_window = window_create();
+  window_set_window_handlers(game_window, (WindowHandlers) {
+    .load = game_window_load,
+    .unload = game_window_unload
+  });
+  window_stack_push(game_window, true /* Animated */);
+  window_set_background_color(game_window, GColorBlack);
+  victory_window = window_create(); 
+  window_set_window_handlers(victory_window, (WindowHandlers) {
+    .load = victory_window_load,
+    .unload = victory_window_unload
+  });
+  
+  attempts = 1;
+
+  accel_data_service_subscribe(0, NULL);
+
+  timer = app_timer_register(ACCEL_STEP_MS, timer_callback, NULL);
+  
+  Layer *window_layer = window_get_root_layer(game_window);
+  GRect bounds = layer_get_frame(window_layer);
+  
+  path_layer = layer_create(bounds);
+  layer_set_update_proc(path_layer, path_layer_update_callback);
+  layer_add_child(window_layer, path_layer);
+  
+  graphic_walls[0] = gpath_create(&MAZE_PATH_WALL1);
+  graphic_walls[1] = gpath_create(&MAZE_PATH_WALL2);
+  graphic_walls[2] = gpath_create(&MAZE_PATH_WALL3);
+  graphic_walls[3] = gpath_create(&MAZE_PATH_WALL4);
+  graphic_walls[4] = gpath_create(&MAZE_PATH_WALL5);
+}
+
+static void deinit(void) {
+  accel_data_service_unsubscribe();
+  for (int i = 0; i < 5; i++)
+    gpath_destroy(graphic_walls[i]);
+
+  layer_destroy(path_layer);
+
+  window_destroy(game_window);
+  window_destroy(victory_window);
+}
+
+int main(void) {
+  init();
+  app_event_loop();
+  deinit();
+}
